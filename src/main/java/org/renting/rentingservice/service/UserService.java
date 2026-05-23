@@ -17,9 +17,11 @@ import org.renting.rentingservice.repository.RentRepository;
 import org.renting.rentingservice.repository.UserRepository;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
+@Profile("user")
 @RequiredArgsConstructor
 public class UserService {
 

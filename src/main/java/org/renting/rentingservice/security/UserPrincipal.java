@@ -24,6 +24,17 @@ public class UserPrincipal implements UserDetails {
         this.verified = user.isVerified();
     }
 
+    private UserPrincipal(Long id, String email) {
+        this.id = id;
+        this.email = email;
+        this.passwordHash = "";
+        this.verified = false;
+    }
+
+    public static UserPrincipal minimal(Long id, String email) {
+        return new UserPrincipal(id, email);
+    }
+
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
         return List.of(new SimpleGrantedAuthority("ROLE_USER"));

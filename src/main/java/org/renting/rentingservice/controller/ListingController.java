@@ -14,6 +14,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
+import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -22,6 +23,7 @@ import java.util.List;
 
 @RestController
 @RequiredArgsConstructor
+@Profile("property")
 @RequestMapping("/listings")
 @Tag(name = "Listings", description = "Объявления и фотографии")
 public class ListingController {
@@ -55,6 +57,25 @@ public class ListingController {
     @Operation(summary = "Детали объявления", description = "Возвращает полную информацию об объявлении и его фото")
     public ListingDetailsResponse get(@PathVariable Long listingId) {
         return listingService.getDetails(listingId);
+    }
+
+    @GetMapping("/internal/listings/{listingId}")
+    @Operation(summary = "Get listing for internal services")
+    public InternalListingResponse getInternal(@PathVariable Long listingId) {
+        ListingResponse listing = listingService.get(listingId);
+        return InternalListingResponse.builder()
+                .id(listing.getId())
+                .ownerId(listing.getOwnerId())
+                .rentMode(listing.getRentMode())
+                .title(listing.getTitle())
+                .description(listing.getDescription())
+                .address(listing.getAddress())
+                .lat(listing.getLat())
+                .lng(listing.getLng())
+                .houseType(listing.getHouseType())
+                .active(listing.isActive())
+                .createdAt(listing.getCreatedAt())
+                .build();
     }
 
     @PatchMapping("/{listingId}")

@@ -19,7 +19,6 @@ import org.renting.rentingservice.mapper.ChatMapper;
 import org.renting.rentingservice.repository.ChatRepository;
 import org.renting.rentingservice.repository.MessageRepository;
 import org.renting.rentingservice.repository.RentRepository;
-import org.renting.rentingservice.repository.UserRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -34,8 +33,8 @@ public class ChatService {
 
     private final ChatRepository chatRepository;
     private final MessageRepository messageRepository;
-    private final UserRepository userRepository;
-    private final ListingService listingService;
+    private final UserDirectoryService userDirectoryService;
+    private final ListingDirectoryService listingDirectoryService;
     private final RentRepository rentRepository;
     private final ChatMapper chatMapper;
 
@@ -44,7 +43,7 @@ public class ChatService {
         if (currentUserId.equals(request.getOtherUserId())) {
             throw new ConflictException("Cannot create chat with yourself");
         }
-        ListingEntity listing = listingService.findListing(request.getListingId());
+        ListingEntity listing = listingDirectoryService.getOrSyncListing(request.getListingId());
         validateChatParticipants(listing, currentUserId, request.getOtherUserId());
 
         long user1Id = Math.min(currentUserId, request.getOtherUserId());
@@ -52,10 +51,8 @@ public class ChatService {
         return chatRepository.findByUser1IdAndUser2IdAndListingId(user1Id, user2Id, listing.getId())
                 .map(chatMapper::toChatResponse)
                 .orElseGet(() -> {
-                    UserEntity user1 = userRepository.findById(user1Id)
-                            .orElseThrow(() -> new NotFoundException("User not found"));
-                    UserEntity user2 = userRepository.findById(user2Id)
-                            .orElseThrow(() -> new NotFoundException("User not found"));
+                    UserEntity user1 = userDirectoryService.getOrSyncUser(user1Id);
+                    UserEntity user2 = userDirectoryService.getOrSyncUser(user2Id);
                     ChatEntity chat = ChatEntity.builder()
                             .user1(user1)
                             .user2(user2)
@@ -63,6 +60,14 @@ public class ChatService {
                             .build();
                     return chatMapper.toChatResponse(chatRepository.save(chat));
                 });
+    }
+
+    @Transactional
+    public ChatResponse createInternalChat(Long user1Id, Long user2Id, Long listingId) {
+        CreateChatRequest request = new CreateChatRequest();
+        request.setListingId(listingId);
+        request.setOtherUserId(user2Id);
+        return createChat(user1Id, request);
     }
 
     @Transactional(readOnly = true)
@@ -84,8 +89,7 @@ public class ChatService {
     public MessageResponse sendMessage(Long chatId, Long senderId, SendMessageRequest request) {
         ChatEntity chat = findChat(chatId);
         assertParticipant(chat, senderId);
-        UserEntity sender = userRepository.findById(senderId)
-                .orElseThrow(() -> new NotFoundException("User not found"));
+        UserEntity sender = userDirectoryService.getOrSyncUser(senderId);
         MessageEntity message = MessageEntity.builder()
                 .chat(chat)
                 .sender(sender)
@@ -105,14 +109,14 @@ public class ChatService {
 
     @Transactional
     public ChatEntity findOrCreateForListing(Long listingId, Long userA, Long userB) {
-        ListingEntity listing = listingService.findListing(listingId);
+        ListingEntity listing = listingDirectoryService.getOrSyncListing(listingId);
         validateChatParticipants(listing, userA, userB);
 
         long user1Id = Math.min(userA, userB);
         long user2Id = Math.max(userA, userB);
         return chatRepository.findByUser1IdAndUser2IdAndListingId(user1Id, user2Id, listingId).orElseGet(() -> {
-            UserEntity user1 = userRepository.findById(user1Id).orElseThrow();
-            UserEntity user2 = userRepository.findById(user2Id).orElseThrow();
+            UserEntity user1 = userDirectoryService.getOrSyncUser(user1Id);
+            UserEntity user2 = userDirectoryService.getOrSyncUser(user2Id);
             return chatRepository.save(ChatEntity.builder()
                     .user1(user1)
                     .user2(user2)

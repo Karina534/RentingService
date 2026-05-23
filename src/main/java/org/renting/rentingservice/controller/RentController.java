@@ -14,10 +14,12 @@ import org.renting.rentingservice.service.RentService;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
+import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequiredArgsConstructor
+@Profile("property")
 @RequestMapping("/rents")
 @Tag(name = "Rents", description = "Заявки на аренду")
 public class RentController {

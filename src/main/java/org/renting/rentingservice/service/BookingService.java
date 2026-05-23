@@ -15,8 +15,9 @@ import org.renting.rentingservice.exception.ConflictException;
 import org.renting.rentingservice.exception.ForbiddenException;
 import org.renting.rentingservice.exception.NotFoundException;
 import org.renting.rentingservice.mapper.BookingMapper;
+import org.renting.rentingservice.messaging.NotificationEvent;
+import org.renting.rentingservice.messaging.NotificationEventPublisher;
 import org.renting.rentingservice.repository.BookingRepository;
-import org.renting.rentingservice.repository.UserRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -36,8 +37,9 @@ public class BookingService {
 
     private final BookingRepository bookingRepository;
     private final ListingService listingService;
-    private final UserRepository userRepository;
+    private final UserDirectoryService userDirectoryService;
     private final BookingMapper bookingMapper;
+    private final NotificationEventPublisher notificationEventPublisher;
 
     @Transactional
     public BookingResponse create(Long guestId, CreateBookingRequest request) {
@@ -69,8 +71,7 @@ public class BookingService {
                 listing.getId(), request.getStartDate(), request.getEndDate(), ACTIVE_STATUSES)) {
             throw new ConflictException("Dates overlap with an existing booking");
         }
-        UserEntity guest = userRepository.findById(guestId)
-                .orElseThrow(() -> new NotFoundException("User not found"));
+        UserEntity guest = userDirectoryService.getOrSyncUser(guestId);
         BigDecimal total = daily.getPricePerNight().multiply(BigDecimal.valueOf(nights));
         BookingEntity booking = BookingEntity.builder()
                 .listing(listing)
@@ -81,7 +82,9 @@ public class BookingService {
                 .pricePerNightSnapshot(daily.getPricePerNight())
                 .totalAmount(total)
                 .build();
-        return bookingMapper.toResponse(bookingRepository.save(booking));
+        BookingEntity saved = bookingRepository.save(booking);
+        publishBookingEvent("BOOKING_CREATED", saved);
+        return bookingMapper.toResponse(saved);
     }
 
     @Transactional(readOnly = true)
@@ -108,7 +111,9 @@ public class BookingService {
             throw new ConflictException("Booking cannot be canceled in current status");
         }
         booking.setStatus(BookingStatus.CANCELED);
-        return bookingMapper.toResponse(bookingRepository.save(booking));
+        BookingEntity saved = bookingRepository.save(booking);
+        publishBookingEvent("BOOKING_CANCELED", saved);
+        return bookingMapper.toResponse(saved);
     }
 
     @Transactional
@@ -122,7 +127,9 @@ public class BookingService {
             throw new ConflictException("Booking can be completed only on or after checkout date");
         }
         booking.setStatus(BookingStatus.COMPLETED);
-        return bookingMapper.toResponse(bookingRepository.save(booking));
+        BookingEntity saved = bookingRepository.save(booking);
+        publishBookingEvent("BOOKING_COMPLETED", saved);
+        return bookingMapper.toResponse(saved);
     }
 
     public BookingEntity findBooking(Long bookingId) {
@@ -143,5 +150,19 @@ public class BookingService {
     public void markAccepted(BookingEntity booking) {
         booking.setStatus(BookingStatus.ACCEPTED);
         bookingRepository.save(booking);
+        publishBookingEvent("BOOKING_ACCEPTED", booking);
+    }
+
+    private void publishBookingEvent(String eventType, BookingEntity booking) {
+        String ownerEmail = booking.getListing().getOwner() != null ? booking.getListing().getOwner().getEmail() : null;
+        if (ownerEmail == null || ownerEmail.isBlank()) {
+            return;
+        }
+        notificationEventPublisher.publish(NotificationEvent.builder()
+                .eventType(eventType)
+                .email(ownerEmail)
+                .subject("Booking update: " + eventType)
+                .content("Booking #" + booking.getId() + " status is " + booking.getStatus())
+                .build());
     }
 }

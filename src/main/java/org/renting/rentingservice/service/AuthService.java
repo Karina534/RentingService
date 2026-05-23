@@ -19,12 +19,14 @@ import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.UUID;
 
 @Service
+@Profile("user")
 @RequiredArgsConstructor
 public class AuthService {
 
@@ -158,4 +160,15 @@ public class AuthService {
                 .refreshExpiresIn(appProperties.getJwt().getRefreshTtl().toString())
                 .build();
     }
+
+    @Transactional(readOnly = true)
+    public Long validateAccessToken(String token) {
+        Claims claims = jwtTokenProvider.parseClaims(token);
+        if (jwtTokenProvider.isRefreshToken(claims)) {
+            throw new UnauthorizedException("Access token expected");
+        }
+        return jwtTokenProvider.getUserId(claims);
+    }
 }
+
+

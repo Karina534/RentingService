@@ -12,7 +12,6 @@ import org.renting.rentingservice.exception.NotFoundException;
 import org.renting.rentingservice.mapper.ListingMapper;
 import org.renting.rentingservice.repository.ListingPhotoRepository;
 import org.renting.rentingservice.repository.ListingRepository;
-import org.renting.rentingservice.repository.UserRepository;
 import org.renting.rentingservice.repository.spec.ListingSpecifications;
 import org.renting.rentingservice.util.GeoUtils;
 import org.springframework.data.domain.Page;
@@ -32,13 +31,12 @@ public class ListingService {
 
     private final ListingRepository listingRepository;
     private final ListingPhotoRepository photoRepository;
-    private final UserRepository userRepository;
+    private final UserDirectoryService userDirectoryService;
     private final ListingMapper listingMapper;
 
     @Transactional
     public ListingResponse create(Long ownerId, CreateListingRequest request) {
-        UserEntity owner = userRepository.findById(ownerId)
-                .orElseThrow(() -> new NotFoundException("User not found"));
+        UserEntity owner = userDirectoryService.getOrSyncUser(ownerId);
         validateRentModePayload(request);
 
         ListingEntity listing = ListingEntity.builder()
@@ -111,6 +109,11 @@ public class ListingService {
                 .map(listingMapper::toResponse)
                 .toList();
         return PageResponse.from(page, content);
+    }
+
+    @Transactional(readOnly = true)
+    public ListingResponse get(Long listingId) {
+        return listingMapper.toResponse(findListing(listingId));
     }
 
     @Transactional(readOnly = true)

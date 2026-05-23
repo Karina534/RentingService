@@ -12,10 +12,12 @@ import org.renting.rentingservice.service.PaymentService;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
+import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequiredArgsConstructor
+@Profile("property")
 @Tag(name = "Payments", description = "Оплаты и чеки")
 public class PaymentController {
 

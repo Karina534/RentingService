@@ -16,8 +16,9 @@ import org.renting.rentingservice.exception.ConflictException;
 import org.renting.rentingservice.exception.ForbiddenException;
 import org.renting.rentingservice.exception.NotFoundException;
 import org.renting.rentingservice.mapper.RentMapper;
+import org.renting.rentingservice.messaging.NotificationEvent;
+import org.renting.rentingservice.messaging.NotificationEventPublisher;
 import org.renting.rentingservice.repository.RentRepository;
-import org.renting.rentingservice.repository.UserRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -32,9 +33,10 @@ public class RentService {
 
     private final RentRepository rentRepository;
     private final ListingService listingService;
-    private final UserRepository userRepository;
-    private final ChatService chatService;
+    private final UserDirectoryService userDirectoryService;
+    private final CommunicationChatGateway communicationChatGateway;
     private final RentMapper rentMapper;
+    private final NotificationEventPublisher notificationEventPublisher;
 
     @Transactional
     public RentResponse create(Long guestId, CreateRentRequest request) {
@@ -58,14 +60,13 @@ public class RentService {
             RentEntity rent = existingRent.get();
 
             if (request.getCommunicationMethod() == CommunicationMethod.CHAT && listing.getOwner() != null) {
-                chatService.findOrCreateForListing(listing.getId(), guestId, listing.getOwner().getId());
+                communicationChatGateway.ensureChatForListing(listing.getId(), guestId, listing.getOwner().getId());
             }
 
             return rentMapper.toResponse(rent);
         }
 
-        UserEntity guest = userRepository.findById(guestId)
-                .orElseThrow(() -> new NotFoundException("User not found"));
+        UserEntity guest = userDirectoryService.getOrSyncUser(guestId);
         RentEntity rent = RentEntity.builder()
                 .listing(listing)
                 .guest(guest)
@@ -74,8 +75,9 @@ public class RentService {
                 .build();
         rent = rentRepository.save(rent);
         if (request.getCommunicationMethod() == CommunicationMethod.CHAT && listing.getOwner() != null) {
-            chatService.findOrCreateForListing(listing.getId(), guestId, listing.getOwner().getId());
+            communicationChatGateway.ensureChatForListing(listing.getId(), guestId, listing.getOwner().getId());
         }
+        publishRentEvent("RENT_CREATED", rent);
         return rentMapper.toResponse(rent);
     }
 
@@ -117,7 +119,9 @@ public class RentService {
             throw new ConflictException("Rent is already closed");
         }
         rent.setStatus(RentStatus.CLOSED);
-        return rentMapper.toResponse(rentRepository.save(rent));
+        RentEntity saved = rentRepository.save(rent);
+        publishRentEvent("RENT_CLOSED", saved);
+        return rentMapper.toResponse(saved);
     }
 
     private void validateStatusTransition(RentStatus current, RentStatus next) {
@@ -156,5 +160,18 @@ public class RentService {
         if (rent.getListing().getOwner() == null || !rent.getListing().getOwner().getId().equals(userId)) {
             throw new ForbiddenException("Only listing owner can update rent");
         }
+    }
+
+    private void publishRentEvent(String eventType, RentEntity rent) {
+        String ownerEmail = rent.getListing().getOwner() != null ? rent.getListing().getOwner().getEmail() : null;
+        if (ownerEmail == null || ownerEmail.isBlank()) {
+            return;
+        }
+        notificationEventPublisher.publish(NotificationEvent.builder()
+                .eventType(eventType)
+                .email(ownerEmail)
+                .subject("Rent update: " + eventType)
+                .content("Rent #" + rent.getId() + " status is " + rent.getStatus())
+                .build());
     }
 }
