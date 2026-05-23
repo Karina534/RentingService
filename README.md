@@ -236,3 +236,52 @@ docker compose up --build
 - данные разделены по отдельным базам (`user_db`, `property_db`, `comm_db`, `notification_db`) внутри одного контейнера Postgres
 - добавлен Kafka для асинхронной отправки сообщений на почту
 - добавлен MailHog, чтобы безопасно проверять отправку писем (подтверждение email, уведомления) без реальной почты
+
+---
+
+## 10) VPS deployment (host nginx + /renting prefix)
+
+This repository includes production-oriented deployment defaults for low-resource VPS:
+
+- `compose.yaml` publishes only `gateway` on `127.0.0.1:8080`
+- database, kafka, smtp ports are not exposed publicly
+- services use `restart: unless-stopped`
+- memory limits are enabled for 1 GB RAM class servers
+
+### Host nginx integration
+
+Use `docker/nginx/vps-host-nginx-renting.conf` as a snippet and place it into your active HTTPS `server {}` block on VPS.
+This keeps old routes on `/` and forwards backend traffic to `/renting/...`.
+
+After nginx update on VPS:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+### GitHub Actions auto-deploy
+
+Workflow file: `.github/workflows/deploy-vps.yml`
+
+It runs on push to `main` and executes on VPS:
+
+1. `git pull --ff-only origin main`
+2. `docker compose up -d --build`
+3. `docker compose ps`
+4. `docker image prune -f`
+
+Required repository secrets:
+
+- `VPS_HOST`
+- `VPS_PORT`
+- `VPS_USER`
+- `VPS_SSH_KEY`
+- `VPS_DEPLOY_PATH`
+
+### Production .env note
+
+Do not store production secrets in git. Keep `.env` only on VPS and set strong values:
+
+- `JWT_SECRET` (32+ random chars)
+- `POSTGRES_PASSWORD` (strong unique password)
