@@ -2,7 +2,7 @@ name: Deploy to VPS
 
 on:
   push:
-    branches: ["master"]
+    branches: ["server"]
   workflow_dispatch:
 
 concurrency:
@@ -24,14 +24,10 @@ jobs:
           script: |
             set -euo pipefail
             cd "${{ secrets.VPS_DEPLOY_PATH }}"
-            DEPLOY_BRANCH="${{ secrets.VPS_DEPLOY_BRANCH }}"
-            if [ -z "${DEPLOY_BRANCH}" ]; then
-              DEPLOY_BRANCH="master"
-            fi
 
             git fetch --all --prune
-            git checkout "${DEPLOY_BRANCH}"
-            git pull --ff-only origin "${DEPLOY_BRANCH}"
+            git checkout server
+            git pull --ff-only origin server
 
             docker compose up -d --build
             docker compose ps
