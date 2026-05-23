@@ -34,3 +34,4 @@ build/
 
 .env
 /AGENTS.md
+/.agent/

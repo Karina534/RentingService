@@ -1,97 +1,238 @@
-# Renting Service: Monolith -> Microservices (Migration Base)
+# Renting Service — отчет по микросервисной архитектуре + Kafka + Docker
 
-This repository is now prepared for a microservice runtime topology in Docker:
+Этот репозиторий — Spring Boot backend на Java 21 для системы аренды недвижимости. Проект находится в “переходном” состоянии: **по коду это один Maven-модуль и один jar**, но **в Docker он запускается как набор микросервисов**, потому что один и тот же jar стартует несколько раз с разными Spring-профилями (`SPRING_PROFILES_ACTIVE`).
 
-- `gateway` (`nginx`) on `http://localhost:8080`
-- `user-service`
-- `property-service`
-- `communication-service`
-- `notification-service`
-- single Postgres image with multiple logical databases
-- `kafka` for async events (RabbitMQ replaced)
-- `mailhog` SMTP emulator for verification emails and notifications
+---
 
-## 1) Architecture
+## 1) Состав системы в Docker
 
-### Synchronous path
+В `compose.yaml` поднимаются контейнеры:
 
-1. Client -> `gateway` (`nginx`)
-2. Gateway routes by URL prefix:
-   - `/api/v1/auth/**`, `/api/v1/users/**` -> `user-service`
-   - `/api/v1/listings/**`, `/api/v1/rents/**`, `/api/v1/bookings/**`, `/api/v1/payments/**` -> `property-service`
-   - `/api/v1/chats/**`, `/api/v1/internal/chats` -> `communication-service`
+- `gateway` (nginx) — единая точка входа: `http://localhost:8080`
+- `user-service` — регистрация/авторизация/профиль
+- `property-service` — объявления, аренда и платежи
+- `communication-service` — чаты и сообщения
+- `notification-service` — обработка событий и отправка уведомлений по email
+- `postgres` — один контейнер Postgres (PostGIS), но с несколькими отдельными БД
+- `kafka` — брокер сообщений для асинхронных событий
+- `mailhog` — SMTP песочница для писем + веб-интерфейс
 
-### Asynchronous path
+---
 
-1. Domain service publishes events to Kafka (for example: booking created/completed, rent created/closed).
-2. `notification-service` consumes those events.
-3. `notification-service` sends email via SMTP (`mailhog:1025`).
-4. Open MailHog UI at `http://localhost:8025`.
+## 2) Nginx gateway
 
-## 2) Databases from One Postgres Image
+Клиент общается только с gateway:
 
-Single container `postgres` initializes separate DBs using `docker/postgres/init/01-create-databases.sql`:
+```
+Клиент → http://localhost:8080 → (nginx) → нужный сервис
+```
+
+Маршрутизация делается по URL-префиксу в `docker/nginx/nginx.conf`:
+
+- `/api/v1/auth/**`, `/api/v1/users/**` → `user-service`
+- `/api/v1/listings/**`, `/api/v1/rents/**`, `/api/v1/bookings/**`, `/api/v1/payments/**` → `property-service`
+- `/api/v1/chats/**`, `/api/v1/internal/chats` → `communication-service`
+
+Также nginx проксирует Swagger UI по сервисам:
+
+- `/docs/user/...` → Swagger user-service
+- `/docs/property/...` → Swagger property-service
+- `/docs/communication/...` → Swagger communication-service
+
+---
+
+## 3) Внешние и внутренние запросы
+
+### В системе есть внешние (public) пути — для клиента через gateway
+
+Это обычные ручки, которыми пользуется пользователь:
+- `/api/v1/auth/...` — регистрация/логин/refresh/logout
+- `/api/v1/users/...` — профиль, повторная отправка письма подтверждения
+- `/api/v1/listings/...` — объявления
+- `/api/v1/rents/...` — заявки на долгосрочную аренду
+- `/api/v1/chats/...` — чаты
+
+### Есть внутренние (internal) пути — для межсервисного общения
+
+Это ручки сервис → сервис, чтобы не тащить чужие таблицы к себе и не ломать границы:
+
+- user-service:
+  - `GET /api/v1/internal/users/{userId}` — отдать данные пользователя другим сервисам
+  - `POST /api/v1/auth/validate` — проверить JWT и вернуть `userId`
+- property-service:
+  - `GET /api/v1/listings/internal/listings/{listingId}` — отдать данные объявления другим сервисам
+- communication-service:
+  - `POST /api/v1/internal/chats` — создать чат по запросу другого сервиса
+
+---
+
+## 4) Базы данных
+
+Поднимается **один контейнер Postgres**, но в нем создаются **4 отдельные базы** (инициализация в `docker/postgres/init/01-create-databases.sql`):
 
 - `user_db`
 - `property_db`
 - `comm_db`
 - `notification_db`
 
-This keeps strict service data ownership while still using one Postgres image.
+Каждый сервис подключается к своей базе через env-переменные (`DB_NAME=...`) в `compose.yaml`.  
 
-## 3) Kafka Instead of RabbitMQ
+Смысл этого разделения:
 
-RabbitMQ is not used in this setup.
+- у каждого сервиса “свои” данные (ownership)
+- проще мигрировать к настоящим микросервисам дальше
+- меньше риск случайно “залезть” в чужие таблицы
 
-Kafka broker is started in KRaft mode and exposed to services via:
+---
 
-- `KAFKA_BOOTSTRAP_SERVERS=kafka:9092`
+## 5) Использование Kafka
 
-Recommended topics:
+Kafka здесь — это шина событий (асинхронный канал), чтобы сервисы не дергали друг друга напрямую для уведомлений.
 
-- `booking-events`
-- `rent-events`
-- `user-events`
+Логика:
+- доменный сервис делает действие (например, создана заявка на аренду)
+- публикует событие в Kafka
+- `notification-service` подписан на эти события и отправляет уведомление
 
-Recommended event style:
+В проекте:
+- `NotificationEventPublisher` публикует JSON в топик `notification-events`
+- `NotificationEventConsumer` слушает `notification-events` (groupId `notification-service`) и отправляет email
 
-- key: aggregate id (`bookingId`, `rentId`, `userId`)
-- value: JSON payload with `eventType`, `eventId`, `occurredAt`, `data`
+Схема:
 
-## 4) Files Added/Changed
+```
+property-service
+  → Kafka (topic: notification-events)
+    → notification-service
+      → SMTP (mailhog:1025)
+```
 
-- `compose.yaml` - full microservice runtime
-- `docker/nginx/nginx.conf` - API gateway routing
-- `docker/postgres/init/01-create-databases.sql` - multi-DB init
-- `Dockerfile` - container build for services
-- `src/main/resources/application.yml` - env-driven runtime config
-- `src/main/resources/config/application-user.yml`
-- `src/main/resources/config/application-property.yml`
-- `src/main/resources/config/application-communication.yml`
-- `src/main/resources/config/application-notification.yml`
+---
 
-## 5) Run
+## 6) Использование MailHog
+
+MailHog — это SMTP “эмулятор” и web-интерфейс для просмотра писем. Он нужен, чтобы:
+
+- не отправлять письма в реальную почту во время разработки
+- легко проверять “письмо пришло/не пришло”, и что внутри него
+
+Порты:
+- SMTP: `mailhog:1025` (внутри Docker)
+- Web UI: `http://localhost:8025` (в браузере)
+
+В проекте:
+- при регистрации отправляется письмо подтверждения email
+- при создании записи на долгосрочную аренду владельцу объявления приходит уведомление
+- при создании записи на короткосрочную аренду владельцу объявления приходит уведомление
+- после оплаты короткосрочной аренды владельцу объявления приходит уведомление
+
+---
+
+## 7) Пример цепочки вызовов: от регистрации до заявки на долгосрочную аренду
+
+Пример реального пользовательского сценария.
+
+### Шаг 1: Регистрация пользователя (user-service через gateway)
+
+Запрос:
+- `POST http://localhost:8080/api/v1/auth/register`
+
+Пример тела:
+```json
+{
+  "email": "user1@mail.com",
+  "username": "user1",
+  "phone": "+79990000000",
+  "password": "secret123"
+}
+```
+
+Что происходит:
+- nginx отправляет запрос в `user-service`
+- пользователь сохраняется в `user_db`
+- отправляется письмо подтверждения на SMTP `mailhog:1025`
+- письмо видно в MailHog UI: `http://localhost:8025`
+
+### Шаг 2: Подтверждение email
+
+Берем токен из письма (MailHog) и подтверждаем:
+- `POST http://localhost:8080/api/v1/users/email/confirm`
+```json
+{ "token": "..." }
+```
+
+### Шаг 3: Логин и получение JWT
+
+- `POST http://localhost:8080/api/v1/auth/login`
+```json
+{ "email": "user1@mail.com", "password": "secret123" }
+```
+
+Ответ содержит `accessToken` (Bearer) и `refreshToken`.
+
+### Шаг 4: Выбор MONTHLY-объявления (property-service)
+
+- `GET http://localhost:8080/api/v1/listings?rentMode=MONTHLY...`
+- `GET http://localhost:8080/api/v1/listings/{listingId}`
+
+### Шаг 5: Создание заявки на долгосрочную аренду (property-service)
+
+Запрос (с Bearer accessToken):
+- `POST http://localhost:8080/api/v1/rents`
+```json
+{
+  "listingId": 123,
+  "communicationMethod": "CHAT"
+}
+```
+
+Что происходит внутри:
+- Проверка подлинности пользователя (аутентификация):
+  - gateway прокидывает заголовок `Authorization: Bearer ...` в `property-service`
+  - в `property-service` JWT-фильтр (Spring Security) проверяет подпись токена и достает `userId`, который дальше используется в бизнес-логике (например, через `SecurityUtils.currentUserId()`)
+- `property-service` создает заявку в `property_db`
+- если выбран `CHAT`, то `property-service` делает внутренний вызов:
+  - `POST http://communication-service:8080/api/v1/internal/chats`
+- затем `property-service` публикует событие уведомления в Kafka (топик `notification-events`)
+- `notification-service` читает событие и отправляет email через MailHog
+
+Итоговая схема:
+
+```
+Клиент
+  → gateway (/api/v1/rents)
+    → property-service
+      → (HTTP) communication-service (/api/v1/internal/chats)  [если CHAT]
+      → (Kafka) notification-events
+         → notification-service
+            → MailHog SMTP
+```
+
+==Добавить про проверку пользователя==
+
+---
+
+## 8) Сборка и запуск
+
+Запустить можно командой:
 
 ```bash
 docker compose up --build
 ```
 
-Main entrypoints:
-
+Точки входа:
 - Gateway: `http://localhost:8080`
 - MailHog UI: `http://localhost:8025`
-- Kafka broker: `localhost:9092`
+- Kafka: `localhost:9092`
 - Postgres: `localhost:5433`
 
-## 6) Important Migration Note
+---
 
-Current runtime is a migration base: infrastructure is already microservice-ready and endpoints are routed through gateway.
+## 9) Выводы
 
-Next step is code boundary extraction (separate Maven modules/apps) so each service contains only its own domain code:
-
-- `user-service`: auth/profile/email verification + JWT validation endpoint
-- `property-service`: listings/rents/bookings/payments
-- `communication-service`: chats/messages
-- `notification-service`: Kafka consumers + SMTP sending + delivery logs
-
-This phased approach avoids a risky big-bang rewrite and keeps your project runnable while splitting code safely.
+В ходе работы была собрана и настроена микросервисная топология системы аренды в Docker:
+- настроен `nginx` gateway для маршрутизации запросов и удобного доступа к Swagger по префиксам `/docs/*`
+- приложение запускается как набор сервисов (`user-service`, `property-service`, `communication-service`, `notification-service`) за счет Spring-профилей
+- данные разделены по отдельным базам (`user_db`, `property_db`, `comm_db`, `notification_db`) внутри одного контейнера Postgres
+- добавлен Kafka для асинхронной отправки сообщений на почту
+- добавлен MailHog, чтобы безопасно проверять отправку писем (подтверждение email, уведомления) без реальной почты
