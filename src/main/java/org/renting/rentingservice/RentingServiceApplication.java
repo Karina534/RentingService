@@ -24,3 +24,5 @@ public class RentingServiceApplication {
 //    "email": "user@example.com",
 //    "password": "password123"
 //}
+
+// Check action
