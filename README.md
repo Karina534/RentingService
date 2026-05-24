@@ -208,8 +208,6 @@ MailHog — это SMTP “эмулятор” и web-интерфейс для 
             → MailHog SMTP
 ```
 
-==Добавить про проверку пользователя==
-
 ---
 
 ## 8) Сборка и запуск
@@ -236,52 +234,61 @@ docker compose up --build
 - данные разделены по отдельным базам (`user_db`, `property_db`, `comm_db`, `notification_db`) внутри одного контейнера Postgres
 - добавлен Kafka для асинхронной отправки сообщений на почту
 - добавлен MailHog, чтобы безопасно проверять отправку писем (подтверждение email, уведомления) без реальной почты
-
 ---
 
-## 10) VPS deployment (host nginx + /renting prefix)
+## 10) Деплой на сервер
 
-This repository includes production-oriented deployment defaults for low-resource VPS:
+Для деплоя используется тот же `compose.yaml`.  
+Код хранится в GitHub, а на VPS лежит только рабочая копия репозитория и `.env` с секретами.
 
-- `compose.yaml` publishes only `gateway` on `127.0.0.1:8080`
-- database, kafka, smtp ports are not exposed publicly
-- services use `restart: unless-stopped`
-- memory limits are enabled for 1 GB RAM class servers
+Как это работает:
+- при `push` в ветку `server` запускается GitHub Actions
+- workflow подключается к VPS по SSH
+- переходит в папку `VPS_DEPLOY_PATH`
+- делает `git pull --ff-only origin server`
+- пересобирает образы и перезапускает контейнеры
+- дополнительно перезапускает `gateway`, чтобы Nginx подхватил новые контейнеры
 
-### Host nginx integration
+На сервере после деплоя поднимаются:
+- `gateway` на `:8080`
+- `mailhog` на `:8085`
+- `user-service`, `property-service`, `communication-service`, `notification-service`
+- `postgres` и `kafka`
 
-Use `docker/nginx/vps-host-nginx-renting.conf` as a snippet and place it into your active HTTPS `server {}` block on VPS.
-This keeps old routes on `/` and forwards backend traffic to `/renting/...`.
-
-After nginx update on VPS:
-
-```bash
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-### GitHub Actions auto-deploy
-
-Workflow file: `.github/workflows/deploy-vps.yml`
-
-It runs on push to `main` and executes on VPS:
-
-1. `git pull --ff-only origin main`
-2. `docker compose up -d --build`
-3. `docker compose ps`
-4. `docker image prune -f`
-
-Required repository secrets:
-
+Для работы деплоя нужны GitHub Secrets:
 - `VPS_HOST`
 - `VPS_PORT`
 - `VPS_USER`
 - `VPS_SSH_KEY`
 - `VPS_DEPLOY_PATH`
 
-### Production .env note
+На сервере отдельно лежит файл `.env` с переменными:
+- `POSTGRES_PASSWORD`
+- `JWT_SECRET`
+- `PAYMENT_COMMISSION_PERCENT`
+- `PAYMENT_MOCK_SUCCESS_RATE`
 
-Do not store production secrets in git. Keep `.env` only on VPS and set strong values:
+---
 
-- `JWT_SECRET` (32+ random chars)
-- `POSTGRES_PASSWORD` (strong unique password)
+## 11) GitHub Actions
+
+Workflow находится в `.github/workflows/deploy-vps.yml` и запускается при `push` в `server`.  
+Это значит, что любая новая версия кода в этой ветке автоматически уходит на сервер.
+
+Порядок внутри workflow такой:
+- GitHub Actions получает доступ к VPS по SSH
+- заходит в папку с проектом
+- обновляет код из ветки `server`
+- выполняет `docker compose up -d --build`
+- делает `docker compose restart gateway`
+- показывает состояние контейнеров
+- удаляет старые образы командой `docker image prune -f`
+
+Таким образом при изменении кода в ветке server и push в GitHub происходит автоматическое обновление и перезапуск 
+проекта на удаленном сервере.
+
+Документация доступна по пути:
+
+- property: http://157.22.230.55:8080/docs/property/swagger-ui.html
+- user: http://157.22.230.55:8080/docs/user/swagger-ui/index.html
+- communication: http://157.22.230.55:8080/docs/communication/swagger-ui.html
