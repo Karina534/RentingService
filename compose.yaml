@@ -48,7 +48,7 @@ services:
     container_name: mailhog
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8025:8025"
+      - "8085:8025"
     mem_limit: 64m
 
   user-service:
